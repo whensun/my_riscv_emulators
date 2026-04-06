@@ -1,0 +1,168 @@
+name: Build
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 0 * * *"
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    env:
+      BUILDDIR: build
+      USE_ANALYZER: 1
+      USE_LIBS_PROBE: 1
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            arch: x86_64
+            make: make CFLAGS="-Werror"
+            runner: ubuntu-latest
+            apt-pkgs: libx11-dev libxext-dev libwayland-dev libxkbcommon-dev
+            test: yes
+
+          - os: linux
+            arch: i386
+            make: make CC=clang CFLAGS="-Werror -m32"
+            runner: ubuntu-latest
+            apt-pkgs: gcc-multilib libx11-dev libxext-dev libwayland-dev libxkbcommon-dev
+            test: yes
+
+          - os: linux
+            arch: arm64
+            make: make CFLAGS="-Werror"
+            runner: ubuntu-24.04-arm
+            apt-pkgs: libx11-dev libxext-dev libwayland-dev libxkbcommon-dev
+            test: yes
+
+          - os: linux
+            arch: riscv64
+            make: make CC=riscv64-linux-gnu-gcc CFLAGS="-Werror"
+            runner: ubuntu-latest
+            apt-pkgs: gcc-riscv64-linux-gnu libc6-dev-riscv64-cross libx11-dev libxext-dev libwayland-dev libxkbcommon-dev
+
+          - os: windows
+            arch: x86_64
+            make: make CC=x86_64-w64-mingw32-gcc CFLAGS="-Werror"
+            runner: ubuntu-latest
+
+          - os: windows
+            arch: arm64
+            make: make CC=aarch64-w64-mingw32-gcc CFLAGS="-Werror"
+            runner: ubuntu-latest
+
+          - os: windows
+            arch: i386
+            make: make CC=i686-w64-mingw32-gcc CFLAGS="-Werror"
+            runner: ubuntu-latest
+
+          - os: macos
+            arch: x86_64
+            make: make CFLAGS="-Werror -target x86_64-apple-macos10.12 -ISDL2/include"
+            runner: macos-latest
+            sdl2: yes
+            test: yes
+
+          - os: macos
+            arch: arm64
+            make: make CFLAGS="-Werror -target arm64-apple-macos11 -ISDL2/include"
+            runner: macos-latest
+            sdl2: yes
+            test: yes
+
+          - os: freebsd
+            arch: x86_64
+            make: make USE_X11=0 USE_SDL=2 CC=clang CFLAGS="-Werror -target x86_64-freebsd -ISDL2/include --sysroot=sysroot" LDFLAGS="-fuse-ld=lld"
+            runner: ubuntu-latest
+            apt-pkgs: clang lld wget xz-utils
+            sysroot_url: https://github.com/LekKit/assets/releases/download/freebsd_sysroot_14.3/freebsd_sysroot_14.3_amd64.tar.gz
+            sdl2: yes
+
+          - os: openbsd
+            arch: x86_64
+            make: make USE_X11=0 USE_SDL=2 CC=clang CFLAGS="-Werror -target x86_64-openbsd -ISDL2/include --sysroot=sysroot" LDFLAGS="-fuse-ld=lld"
+            runner: ubuntu-latest
+            apt-pkgs: clang lld wget xz-utils
+            sysroot_url: https://github.com/LekKit/assets/releases/download/openbsd_sysroot_7.7/openbsd_sysroot_7.7_amd64.tar.gz
+            sdl2: yes
+
+            # Cosmopolitan ships with an older GCC with a buggy static analyzer
+          - os: cosmo
+            arch: x86_64
+            make: make USE_SDL=2 USE_ANALYZER=0 CC=cosmocc CFLAGS="-Werror -ISDL2/include"
+            runner: ubuntu-latest
+            sdl2: yes
+            test: yes
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v6
+
+    - name: Install Dependencies
+      if: matrix.apt-pkgs
+      run: |
+        sudo DEBIAN_FRONTEND=noninteractive apt-get update
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -yq --no-install-recommends ${{ matrix.apt-pkgs }}
+
+    - name: Download LLVM-MinGW Toolchain
+      if: matrix.os == 'windows' && matrix.runner == 'ubuntu-latest'
+      run: |
+        LLVM_MINGW_URL="https://github.com/mstorsjo/llvm-mingw/releases/download/20250613/llvm-mingw-20250613-msvcrt-ubuntu-22.04-x86_64.tar.xz"
+
+        mkdir llvm-mingw
+        wget ${LLVM_MINGW_URL} -qLO - | tar Jxf - --strip-components=1 -C llvm-mingw
+
+        echo "${{ github.workspace }}/llvm-mingw/bin" >> $GITHUB_PATH
+
+    - name: Download Cosmopolitan Toolchain
+      if: matrix.os == 'cosmo'
+      run: |
+        COSMOCC_URL="https://github.com/jart/cosmopolitan/releases/download/4.0.2/cosmocc-4.0.2.zip"
+
+        mkdir cosmocc
+        wget ${COSMOCC_URL} -qLO cosmocc.zip
+        unzip -qq cosmocc.zip -d cosmocc
+
+        echo "${{ github.workspace }}/cosmocc/bin" >> $GITHUB_PATH
+
+    - name: Download sysroot
+      if: matrix.sysroot_url
+      run: |
+        mkdir sysroot
+        wget ${{ matrix.sysroot_url }} -qLO - | tar xzf - -C sysroot
+
+    - name: Download SDL2 headers
+      if: matrix.sdl2
+      run: |
+        SDL2_URL="https://github.com/libsdl-org/SDL/releases/download/release-2.30.12/SDL2-2.30.12.tar.gz"
+
+        mkdir SDL2
+        wget ${SDL2_URL} -qLO - | tar xzf - --strip-components=1 -C SDL2
+
+    - name: Build
+      run: ${{ matrix.make }}
+
+    - name: Run tests
+      if: matrix.test
+      timeout-minutes: 10
+      run: ${{ matrix.make }} test
+
+    - name: Upload Artifacts
+      uses: actions/upload-artifact@v7
+      with:
+        compression-level: 9
+        retention-days: 5
+        name: rvvm_${{ matrix.os }}_${{ matrix.arch }}
+        path: |
+          build/*
+          !build/*.*.*
+          !build/*.zip
+          !build/*/
