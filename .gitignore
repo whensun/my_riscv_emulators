@@ -1,1 +1,9 @@
 qemu/tests/keys/id_rsa
+*.pem
+*.key
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+qemu/tests/keys/vagrant
+qemu/tests/keys/
